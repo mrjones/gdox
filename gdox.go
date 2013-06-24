@@ -18,10 +18,24 @@ type Config struct {
 	GoogleClientId string
 	GoogleClientSecret string
 	EyeFiUploadKey string
+	GoogleAPIKey string
+	GCMRegistrationId string
 }
 
 type GDocsHandler struct {
 	service *drive.Service
+	googleApiKey string
+	gcmRegistrationId string
+}
+
+type BeepBoopData struct {
+	Title string `json:"title"`
+	Body string `json:"body"`
+}
+
+type GcmRequest struct {
+	RegistrationIds []string `json:"registration_ids"`
+	Data BeepBoopData `json:"data,omitempty"`
 }
 
 func NewGDocsHandler(config *Config) (*GDocsHandler, error) {
@@ -36,11 +50,12 @@ func NewGDocsHandler(config *Config) (*GDocsHandler, error) {
 		return nil, err
 	}
 
-	return &GDocsHandler{service: service}, nil
+	return &GDocsHandler{service: service, googleApiKey: config.GoogleAPIKey, gcmRegistrationId: config.GCMRegistrationId}, nil
 }
 
 func (g *GDocsHandler) HandleUpload(filename string, data []byte) error {
 	driveFile := &drive.File{Title: filename}
+	// TODO: make configurable
 	parent := &drive.ParentReference{Id: "0B1SxUBEP5_X2ZEdMaW45Qy1KcFk"}
 	driveFile.Parents = []*drive.ParentReference{parent}
 
@@ -49,7 +64,56 @@ func (g *GDocsHandler) HandleUpload(filename string, data []byte) error {
 		return err
 	}
 
-	return nil	
+	if (g.googleApiKey != "") {
+		err = g.sendNotification("GDox", "File uploaded")
+		if err != nil {
+			log.Println(err)
+		}
+	}
+
+	return nil
+}
+
+func (g *GDocsHandler) sendNotification(title, body string) error {
+	// TODO: handle on "last photo in roll"?
+	gcmRequest := GcmRequest{}
+	gcmRequest.RegistrationIds = make([]string, 1)
+	gcmRequest.RegistrationIds[0] = g.gcmRegistrationId
+	gcmRequest.Data.Title = title
+	gcmRequest.Data.Body = body
+
+	reqBody, err := json.Marshal(gcmRequest)
+	if err != nil {
+		return err
+	}
+	log.Println("Sending: " + string(reqBody))
+
+	req, err := http.NewRequest(
+		"POST", "https://android.googleapis.com/gcm/send", bytes.NewReader(reqBody))
+
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "key=" + g.googleApiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := http.Client{}
+	resp, err := client.Do(req)
+
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+	respBody, err := ioutil.ReadAll(resp.Body)
+		
+	if err != nil {
+		return err
+	}
+
+	log.Println(string(respBody))
+	return nil
 }
 
 func parseConfigFile(filename string) (*Config, error) {
@@ -117,6 +181,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	e := geyefi.NewServer("818b6183a1a0839d88366f5d7a4b0161", handler)
+	e := geyefi.NewServer(config.EyeFiUploadKey, handler)
 	e.ListenAndServe()
 }
